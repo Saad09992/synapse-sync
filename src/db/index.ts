@@ -17,9 +17,13 @@ export const pool = new Pool({
 });
 
 export const initDB = async () => {
-  const sqlPath = path.join(import.meta.dirname, "init.sql");
-  console.log(sqlPath);
-  const sql = fs.readFileSync(sqlPath, "utf8");
-  await pool.query(sql);
-  return true;
+  try {
+    const sqlPath = path.join(import.meta.dirname, "init.sql");
+    const sql = fs.readFileSync(sqlPath, "utf8");
+    await pool.query(sql);
+    return true;
+  } catch (error) {
+    console.log(error);
+    return false;
+  }
 };
