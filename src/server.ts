@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import { initDB, pool } from "./db/index.js";
 import type { Document } from "./types/documents.ts";
 import type { Changelog } from "./types/changelog.ts";
+import type { ResolutionType } from "./types/sync.ts";
 const app = Fastify({
   logger: false,
 });
@@ -84,6 +85,8 @@ app.post<{
     description: string;
   };
 }>("/document/:document_id/sync", async (request, reply) => {
+  const client = await pool.connect();
+
   try {
     const { document_id } = request.params;
     const { client_id, title, content, version, description } = request.body;
@@ -94,25 +97,49 @@ app.post<{
 
     const latestDoc: Document = result.rows[0];
 
-    if (latestDoc.version > version) {
+    if (latestDoc == null) {
+      return reply.status(404).send({
+        status: "not_found",
+      });
+    }
+
+    if (latestDoc.version > version || latestDoc.version < version) {
       return reply.status(409).send({
         status: "outdated",
         latest_document: latestDoc,
       });
     }
     const nextVersion = version + 1;
+    await client.query("BEGIN");
 
-    const updateDoc = await pool.query(
-      "UPDATE documents SET title=$1, content=$2, version=$3 WHERE id=$4 RETURNING *",
-      [title, content, nextVersion, document_id],
+    const updateDoc = await client.query(
+      "UPDATE documents SET title=$1, content=$2, version=$3, updated_at=NOW() WHERE id=$4 AND version=$5 RETURNING *",
+      [title, content, nextVersion, document_id, version],
     );
+
+    if (updateDoc.rowCount == 0) {
+      await client.query("ROLLBACK");
+      return await reply.status(409).send({
+        error: "server_version_mismatch",
+      });
+    }
 
     const updatedDoc: Document = updateDoc.rows[0];
 
-    const createChangelog = await pool.query(
+    const createChangelog = await client.query(
       "INSERT INTO changelogs (client_id,document_id,type,client_version,server_version,resolution,description) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *",
-      [client_id, document_id, version, latestDoc.version, null, description],
+      [
+        client_id,
+        document_id,
+        "normal",
+        version,
+        latestDoc.version,
+        null,
+        description,
+      ],
     );
+
+    await client.query("COMMIT");
 
     const createdChangelog: Changelog = createChangelog.rows[0];
 
@@ -122,10 +149,116 @@ app.post<{
       status: "updated",
     });
   } catch (error: any) {
+    await client.query("ROLLBACK");
+
     app.log.error(error);
     return reply.status(500).send({
       error: error.message,
     });
+  } finally {
+    client.release();
+  }
+});
+
+// POST - /resolve - Resolve conflicted Document between client and server
+app.post<{
+  Body: {
+    client_id: number;
+    document_id: number;
+    resolution_type: ResolutionType;
+    description: string;
+    server_version: number;
+    document: {
+      title: string;
+      content: string;
+      version: number;
+    };
+  };
+}>("/resolve", async (request, reply) => {
+  const client = await pool.connect();
+  try {
+    const {
+      client_id,
+      document_id,
+      resolution_type,
+      description,
+      document,
+      server_version,
+    } = request.body;
+
+    const latestDoc = await client.query(
+      "SELECT * FROM documents WHERE id=$1",
+      [document_id],
+    );
+
+    if (latestDoc.rows[0] == null) {
+      return await reply.status(404).send({
+        status: "not_found",
+      });
+    }
+
+    if (latestDoc.rows[0].version != server_version) {
+      return await reply.status(409).send({
+        status: "out_dated",
+        document: latestDoc.rows[0],
+      });
+    }
+
+    await client.query("BEGIN");
+    let updatedDoc = latestDoc.rows[0];
+
+    if (resolution_type == "client_wins") {
+      const newVersion = latestDoc.rows[0].version + 1;
+
+      const updateDocQuery = await client.query(
+        "UPDATE documents SET title=$1, content=$2, version=$3, updated_at=NOW() WHERE id=$4 AND version=$5 RETURNING *",
+        [
+          document.title,
+          document.content,
+          newVersion,
+          document_id,
+          server_version,
+        ],
+      );
+
+      if (updateDocQuery.rowCount == 0) {
+        await client.query("ROLLBACK");
+        return await reply.status(409).send({
+          error: "server_version_mismatch",
+        });
+      }
+      updatedDoc = updateDocQuery.rows[0];
+    }
+
+    const addChangelogQuery = await client.query(
+      "INSERT INTO changelogs (client_id,document_id,type,client_version,server_version,resolution,description) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *",
+      [
+        client_id,
+        document_id,
+        "conflict",
+        document.version,
+        latestDoc.rows[0].version,
+        resolution_type,
+        description,
+      ],
+    );
+
+    await client.query("COMMIT");
+    const changelog = addChangelogQuery.rows[0];
+
+    return await reply.status(200).send({
+      document: updatedDoc,
+      changelog: changelog,
+      status: "resolved",
+    });
+  } catch (error: any) {
+    await client.query("ROLLBACK");
+
+    return await reply.status(500).send({
+      error: error.message,
+    });
+  } finally {
+    client.release();
   }
 });
 

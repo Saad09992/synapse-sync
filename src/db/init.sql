@@ -1,5 +1,15 @@
-CREATE TYPE changelog_type AS ENUM ('normal','conflict');
-CREATE TYPE resolution_type AS ENUM ('server_wins','client_wins');
+DO 'BEGIN
+   CREATE TYPE changelog_type AS ENUM (''normal'',''conflict'');
+EXCEPTION WHEN duplicate_object THEN
+   NULL;  -- ignore the error
+END;';
+
+
+DO 'BEGIN
+   CREATE TYPE resolution_type AS ENUM (''server_wins'',''client_wins'');
+EXCEPTION WHEN duplicate_object THEN
+   NULL;  -- ignore the error
+END;';
 
 
 CREATE TABLE IF NOT EXISTS documents (
@@ -19,7 +29,7 @@ CREATE TABLE IF NOT EXISTS changelogs(
     type changelog_type Default 'normal', -- normal or conflicted
     client_version INT DEFAULT NULL,
     server_version INT DEFAULT NULL,
-    resolution resolution_type DEFAULT NULL, -- client_wins, server_wins, null for normal
+    resolution resolution_type DEFAULT NULL, -- client_wins, server_wins, null for normal 
     description VARCHAR(255) DEFAULT '',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_document FOREIGN KEY (document_id) REFERENCES documents(id)
