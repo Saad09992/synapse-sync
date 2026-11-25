@@ -25,11 +25,12 @@ CREATE TABLE IF NOT EXISTS documents (
 CREATE TABLE IF NOT EXISTS changelogs(
     id SERIAL PRIMARY KEY,
     client_id INT NOT NULL,
+    client_key VARCHAR(255) DEFAULT NULL,
     document_id int NOT NULL,
     type changelog_type Default 'normal', -- normal or conflicted
     client_version INT DEFAULT NULL,
     server_version INT DEFAULT NULL,
-    resolution resolution_type DEFAULT NULL, -- client_wins, server_wins, null for normal 
+    resolution resolution_type DEFAULT NULL, -- client_wins, server_wins, null for normal
     description VARCHAR(255) DEFAULT '',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_document FOREIGN KEY (document_id) REFERENCES documents(id)
